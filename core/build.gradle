@@ -1,0 +1,27 @@
+plugins {
+    id 'java-library'
+    id 'java-test-fixtures'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+def junitVersion = '6.0.3'
+
+dependencies {
+    testFixturesImplementation "org.junit.jupiter:junit-jupiter-api:${junitVersion}"
+    testImplementation platform("org.junit:junit-bom:${junitVersion}")
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
