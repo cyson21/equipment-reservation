@@ -25,7 +25,7 @@
 | `ReserveEquipment` | 확정된 예약 ID, 미등록 장비, 시간 충돌 또는 입력 오류 | `POST /reservations` → `201` / `404` / `409` / `400` | `reservation create` |
 | `CancelReservation` | 취소 성공, 미등록 예약 또는 입력 오류 | `DELETE /reservations/{id}` → `204` / `404` / `400` | `reservation cancel` |
 
-- `domain`은 `TimeSlot`과 예약 상태를 표현한다. `TimeSlot`은 시각 범위와 두 구간의 겹침을 정의한다.
+- `domain`은 예약 후보와 `TimeSlot`을 표현한다. `TimeSlot`은 시각 범위와 두 구간의 겹침을 정의한다. 저장 어댑터는 확정된 예약의 활성·취소 상태를 보관한다.
 - `application`은 입력 포트와 유스케이스, 출력 포트를 소유한다. `EquipmentCatalog`는 장비 목록과 존재 여부를 제공한다. `ReservationStore.tryReserve`는 확정 또는 시간 충돌을 원자적으로 반환하고, `cancel`은 기존 예약 취소 또는 미등록을 반환한다.
 - `adapter.in`의 REST와 CLI는 입력 형식과 결과 표현을 맡는다. `adapter.out`의 PostgreSQL 구현은 JDBC와 SQL을 담당한다. 인메모리 구현은 코어 유스케이스 테스트에서 같은 출력 포트를 사용한다.
 - `bootstrap`은 Spring 의존성 조립을 맡는다. REST 서버와 CLI는 각각 웹 모드와 비웹 모드로 실행하며 같은 PostgreSQL 데이터베이스를 사용한다.
@@ -61,8 +61,21 @@ CONSTRAINT reservation_no_active_overlap EXCLUDE USING gist (
 | 6. 업무 규칙과 기술적 보장의 개별 검증 | 코어 테스트로 어떤 구간이 충돌하는지 검증한다. PostgreSQL 통합 테스트에서는 독립 연결 두 개가 제한 시간 안에 실제 경합하는 것을 관찰하고 확정 1건·충돌 1건·활성 예약 1건을 확인한다. 시차와 마이크로초 단위 시각도 DB에 저장한 뒤 읽어 비교한다. |
 | 7. 단계적·병렬 구현 | 코어와 포트 계약을 검증한 기준 커밋을 남긴다. 입력·저장 어댑터의 작업 범위, 개별 검증과 통합 변경 내역을 비교해 같은 계약을 바탕으로 작업을 나눌 수 있었는지 확인한다. |
 
+### 코어 기준 커밋
+
+예약·취소 코어와 인메모리 저장소 계약 테스트는 `ac2c366`에서 검증했다. Java 21을 사용할 수 있는 PowerShell에서 아래 명령으로 실행한다.
+
+```powershell
+.\gradlew.bat :core:test :core:jar
+& "$env:JAVA_HOME\bin\jdeps.exe" --print-module-deps .\core\build\libs\core.jar
+```
+
+별도 체크아웃에서 의존성을 캐시에 받은 뒤 오프라인으로 재실행했다. Spring과 PostgreSQL 없이 JUnit 21건이 통과했고 실패·건너뜀은 0건이었다. 테스트 스위트 실행 시간 합계는 0.088초였고, Wrapper 호출부터 빌드·테스트 종료까지 약 2.6초가 걸렸다. 코어 JAR의 JDK 모듈 의존성은 `java.base`였고 Gradle `runtimeClasspath`에는 외부 라이브러리가 없었다.
+
+저장 계약 테스트 7건은 [공용 테스트 픽스처](core/src/testFixtures/java/io/github/cyson21/reservation/testing/ReservationStoreContract.java)에 있다. PostgreSQL 어댑터에도 같은 테스트를 연결한다. 어댑터 구현 후에는 `git diff ac2c366..HEAD -- core/src/main`으로 코어 변경 범위를 확인할 수 있다.
+
 ### 설계 단계에서 확인한 동작
 
-Windows의 PostgreSQL 17.12 임시 클러스터에서 제약과 SQL을 실행했다. 인접 구간, 다른 장비의 겹치는 구간, 반복 취소, 미등록 ID 취소, 취소 후 재예약, 기본 키 오류 전파를 확인했다. 독립 `psql` 연결에서 첫 예약을 커밋하기 전 겹치는 두 번째 예약이 잠금을 기다리는 것을 `pg_stat_activity`로 확인했다. 커밋 후 두 번째 삽입은 빈 결과를 반환했고 대상 장비의 활성 예약은 1건이었다. Java 유스케이스, JDBC 변환, REST·CLI 실행 검증은 구현 단계에서 수행한다.
+Windows의 PostgreSQL 17.12 임시 클러스터에서 제약과 SQL을 실행했다. 인접 구간, 다른 장비의 겹치는 구간, 반복 취소, 미등록 ID 취소, 취소 후 재예약, 기본 키 오류 전파를 확인했다. 독립 `psql` 연결에서 첫 예약을 커밋하기 전 겹치는 두 번째 예약이 잠금을 기다리는 것을 `pg_stat_activity`로 확인했다. 커밋 후 두 번째 삽입은 빈 결과를 반환했고 대상 장비의 활성 예약은 1건이었다. 이 실험은 PostgreSQL 제약과 SQL 동작을 확인한 결과다. JDBC 변환과 REST·CLI 실행은 어댑터 단계에서 검증한다.
 
-코어와 인메모리 테스트를 먼저 구현하고 결과를 기준으로 삼는다. 이후 REST와 PostgreSQL을 연결하고 CLI를 추가한다. 각 단계의 변경 파일과 테스트 결과를 남겨 어댑터 추가가 코어에 어떤 영향을 줬는지 보여준다.
+코어와 인메모리의 기준 커밋을 바탕으로 REST와 PostgreSQL을 연결하고 CLI를 추가한다. 각 단계의 변경 파일과 테스트 결과를 남겨 어댑터 추가가 코어에 어떤 영향을 줬는지 보여준다.
