@@ -102,12 +102,12 @@ $pgLog = Join-Path $work 'postgres.log'
 $apiLog = Join-Path $work 'api.log'
 $apiErrors = Join-Path $work 'api.err'
 # Keep external Spring configuration out of the demo's disposable database.
-$inherited = Get-ChildItem Env: | Where-Object Name -Match '^(SPRING|SERVER)[_.-]'
+$inherited = @(Get-ChildItem Env: | Where-Object Name -Match '^(SPRING|SERVER)[_.-]' | Select-Object -ExpandProperty Name)
 $demoKeys = @('SPRING_DATASOURCE_URL', 'SPRING_DATASOURCE_USERNAME', 'SPRING_DATASOURCE_PASSWORD', 'SPRING_CONFIG_LOCATION',
     'TEST_POSTGRES_URL', 'TEST_POSTGRES_USER', 'TEST_POSTGRES_PASSWORD',
     'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS')
 $savedEnvironment = @{}
-foreach ($key in ($demoKeys + $inherited.Name)) {
+foreach ($key in ($demoKeys + $inherited)) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 
@@ -115,7 +115,7 @@ $api = $null
 Push-Location -LiteralPath $project
 try {
     foreach ($key in $savedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+        Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
     }
     $env:SPRING_CONFIG_LOCATION = 'classpath:/application.properties'
     Invoke-Checked '.\gradlew.bat' @(':core:test', ':core:jar', '--rerun-tasks', '--console=plain')
@@ -202,7 +202,11 @@ FROM reservation WHERE equipment_id = 1;
     try {
         Pop-Location
         foreach ($key in $savedEnvironment.Keys) {
-            [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
+            if ($null -eq $savedEnvironment[$key]) {
+                Remove-Item -LiteralPath "Env:$key" -ErrorAction SilentlyContinue
+            } else {
+                [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
+            }
         }
         if ($api) {
             try {
