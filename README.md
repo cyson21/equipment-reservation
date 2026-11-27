@@ -2,6 +2,8 @@
 
 같은 장비의 겹치는 예약 요청이 동시에 들어와도 한 건만 확정하는 서비스다. 예약 코어를 먼저 검증한 뒤 REST·CLI와 PostgreSQL을 연결하고, 포트와 어댑터 구조에서 실제 변경이 일어난 범위를 테스트와 커밋으로 확인했다. Java 21, Spring Boot 4.2.0, PostgreSQL 17을 사용한다.
 
+**[헥사고날 장점 7가지와 검증 근거](#헥사고날의-장점-일곱-가지와-검증-근거) · [새 체크아웃 재현 결과](#새-체크아웃-재현-결과) · [데모 실행 방법](#자동-재현)**
+
 ## 왜 헥사고날 아키텍처인가
 
 - **진입점 추가.** 사용자는 REST로 요청하고 운영자는 CLI로 예약을 처리한다. HTTP 상태 코드와 터미널 출력은 각 어댑터가 맡고, 두 진입점은 같은 입력 포트로 예약 시간과 충돌 규칙을 실행한다.
@@ -51,23 +53,23 @@ CONSTRAINT reservation_no_active_overlap EXCLUDE USING gist (
 
 | 장점 | 확인할 코드 | 테스트·관찰 결과 | 커밋 |
 | --- | --- | --- | --- |
-| 1. 코어의 기술 독립성 | [코어 빌드][core-build], [앱의 `core` 의존성][app-build] | 코어 `runtimeClasspath`는 외부 의존성 0개. 빌드한 코어 JAR의 `jdeps` 결과는 `java.base`만 출력. | `f102a40`, `2f3c7b2` |
-| 2. 저장 구현 변경의 영향 범위 | [인메모리 저장소][memory-store], [JDBC 저장 어댑터][jdbc-store] | 두 구현이 같은 [저장 계약 테스트][store-contract] 7건을 통과. `ac2c366`부터 어댑터를 통합한 `14eb308`까지 `core/` diff가 비어 있음. | `ac2c366`, `21cbad1`, `14eb308` |
-| 3. 빠른 코어 테스트 | [예약 유스케이스][service], [인메모리 저장소][memory-store] | [코어 테스트][service-test]로 충돌·취소·재예약을 검증. 자동 재현에서 PostgreSQL 시작 전에 `:core:test` 21건 통과. | `ac2c366`, `9820e87` |
-| 4. 여러 진입점의 유스케이스 재사용 | [REST 컨트롤러][rest], [CLI][cli], [의존성 조립][bootstrap] | [입력 어댑터 테스트][input-test]와 [실행 JAR 데모][demo]에서 REST 예약 → CLI 충돌 → REST 취소 → REST 종료 후 CLI 재예약 성공을 확인. | `1ccb24f`, `14eb308`, `9820e87` |
-| 5. 코어가 정의하는 외부 계약 | [`ReservationStore.tryReserve`][store-port], [충돌 처리 SQL][jdbc-store] | 코어가 원자적 확정·시간 충돌을 요구한다. [JDBC 테스트][jdbc-test]에서 시간 충돌의 결과 변환과 기본 키 오류 전파를 확인. | `ac2c366`, `21cbad1` |
-| 6. 업무 규칙과 기술적 보장의 개별 검증 | [`TimeSlot`][slot], [PostgreSQL 배제 제약][migration] | [시간 구간 테스트][slot-test]가 `[시작, 종료)`를 검증. [DB 경합 테스트][contention]가 독립 연결의 잠금 대기를 관찰하고 확정 1건·충돌 1건·활성 예약 1건을 확인. | `ac2c366`, `21cbad1`, `33a8d8a` |
-| 7. 단계적·병렬 구현 | [입력 어댑터][inputs], [저장 어댑터][outputs], [최종 조립][bootstrap] | 공통 빌드 커밋에서 분리된 두 작업이 서로 다른 경로를 변경했다. 통합 후 입력 7건과 PostgreSQL 11건이 모두 통과했고 기준 코어의 diff는 비어 있음. | `ac2c366`, `2f3c7b2`, `1ccb24f`, `21cbad1`, `14eb308` |
+| 1. 코어의 기술 독립성 | [코어 빌드][core-build], [앱의 `core` 의존성][app-build] | 코어 `runtimeClasspath`는 외부 의존성 0개. 빌드한 코어 JAR의 `jdeps` 결과는 `java.base`만 출력. | [f102a40][commit-f102a40], [2f3c7b2][commit-2f3c7b2] |
+| 2. 저장 구현 변경의 영향 범위 | [인메모리 저장소][memory-store], [JDBC 저장 어댑터][jdbc-store] | 두 구현이 같은 [저장 계약 테스트][store-contract] 7건을 통과. [ac2c366][commit-ac2c366]부터 어댑터를 통합한 [14eb308][commit-14eb308]까지 `core/` diff가 비어 있음. | [ac2c366][commit-ac2c366], [21cbad1][commit-21cbad1], [14eb308][commit-14eb308] |
+| 3. 빠른 코어 테스트 | [예약 유스케이스][service], [인메모리 저장소][memory-store] | [코어 테스트][service-test]로 충돌·취소·재예약을 검증. 자동 재현에서 PostgreSQL 시작 전에 `:core:test` 21건 통과. | [ac2c366][commit-ac2c366], [9820e87][commit-9820e87] |
+| 4. 여러 진입점의 유스케이스 재사용 | [REST 컨트롤러][rest], [CLI][cli], [의존성 조립][bootstrap] | [입력 어댑터 테스트][input-test]와 [실행 JAR 데모][demo]에서 REST 예약 → CLI 충돌 → REST 취소 → REST 종료 후 CLI 재예약 성공을 확인. | [1ccb24f][commit-1ccb24f], [14eb308][commit-14eb308], [9820e87][commit-9820e87] |
+| 5. 코어가 정의하는 외부 계약 | [`ReservationStore.tryReserve`][store-port], [충돌 처리 SQL][jdbc-store] | 코어가 원자적 확정·시간 충돌을 요구한다. [JDBC 테스트][jdbc-test]에서 시간 충돌의 결과 변환과 기본 키 오류 전파를 확인. | [ac2c366][commit-ac2c366], [21cbad1][commit-21cbad1] |
+| 6. 업무 규칙과 기술적 보장의 개별 검증 | [`TimeSlot`][slot], [PostgreSQL 배제 제약][migration] | [시간 구간 테스트][slot-test]가 `[시작, 종료)`를 검증. [DB 경합 테스트][contention]가 독립 연결의 잠금 대기를 관찰하고 확정 1건·충돌 1건·활성 예약 1건을 확인. | [ac2c366][commit-ac2c366], [21cbad1][commit-21cbad1], [33a8d8a][commit-33a8d8a] |
+| 7. 단계적·병렬 구현 | [입력 어댑터][inputs], [저장 어댑터][outputs], [최종 조립][bootstrap] | 공통 빌드 커밋에서 분리된 두 작업이 서로 다른 경로를 변경했다. 통합 후 입력 7건과 PostgreSQL 11건이 모두 통과했고 기준 코어의 diff는 비어 있음. | [ac2c366][commit-ac2c366], [2f3c7b2][commit-2f3c7b2], [1ccb24f][commit-1ccb24f], [21cbad1][commit-21cbad1], [14eb308][commit-14eb308] |
 
 ### 설계 선택과 작업 분담
 
 예약 확정은 저장 포트의 한 번의 호출로 처리했다. 코어는 어떤 시간대가 유효하고 어떤 결과를 받아야 하는지 정의한다. PostgreSQL은 배제 제약으로 동시 요청에도 그 계약을 지킨다. 포트와 변환 코드가 추가되지만, 입력과 저장 구현을 따로 검증하고 코어 변경 범위를 Git으로 확인할 수 있었다.
 
-사용자가 헥사고날의 장점 일곱 가지를 실제 증거로 보여주는 범위를 정했다. 코어와 계약을 먼저 커밋한 뒤 두 AI 에이전트가 입력과 저장 어댑터를 각각 구현했고, 메인 에이전트가 통합과 실행 검증을 맡았다. 원본 입력·저장 커밋 `84f15b6`, `e4c0904`의 공통 부모는 `2f3c7b2`다. 표의 `1ccb24f`, `21cbad1`은 `main`에 들어간 커밋이다.
+사용자가 헥사고날의 장점 일곱 가지를 실제 증거로 보여주는 범위를 정했다. 코어와 계약을 먼저 커밋한 뒤 두 AI 에이전트가 입력과 저장 어댑터를 각각 구현했고, 메인 에이전트가 통합과 실행 검증을 맡았다. 원본 입력·저장 커밋 [84f15b6][commit-84f15b6], [e4c0904][commit-e4c0904]의 공통 부모는 [2f3c7b2][commit-2f3c7b2]다. 표의 [1ccb24f][commit-1ccb24f], [21cbad1][commit-21cbad1]은 `main`에 들어간 커밋이다.
 
 ### 새 체크아웃 재현 결과
 
-`86171c3`를 새 로컬 클론에서 검증했다. Windows 11, Java 21.0.2, PostgreSQL 17.12를 사용했고 이 실행은 기존 Gradle 배포·의존성 캐시를 사용했다. 코어 21건, 입력 어댑터 7건, PostgreSQL 11건이 통과했다. 실패·건너뜀은 모두 0건이었다. 코어 테스트 스위트 시간 합계는 0.095초였고, 컴파일·테스트·데모 종료까지 43.29초가 걸렸다. 두 수치는 이 실행에서 관찰한 값이다.
+[86171c3][commit-86171c3]를 새 로컬 클론에서 검증했다. Windows 11, Java 21.0.2, PostgreSQL 17.12를 사용했고 이 실행은 기존 Gradle 배포·의존성 캐시를 사용했다. 코어 21건, 입력 어댑터 7건, PostgreSQL 11건이 통과했다. 실패·건너뜀은 모두 0건이었다. 코어 테스트 스위트 시간 합계는 0.095초였고, 컴파일·테스트·데모 종료까지 43.29초가 걸렸다. 두 수치는 이 실행에서 관찰한 값이다.
 
 실행 JAR은 REST 예약 `201`, CLI 중복 예약 종료 코드 `4`와 `TIME_CONFLICT`, REST 취소 `204`, REST 종료 후 CLI 재예약 `0`을 반환했다. PostgreSQL에는 처음 예약이 취소 상태로 남았고 새 예약 한 건의 시작·종료 마이크로초가 그대로 저장됐다. 클론에서 `git diff ac2c366..HEAD -- core`도 비어 있었다.
 
@@ -143,3 +145,15 @@ $LASTEXITCODE # 0. stdout에 새 예약 UUID
 [inputs]: app/src/main/java/io/github/cyson21/reservation/adapter/in
 [outputs]: app/src/main/java/io/github/cyson21/reservation/adapter/out/postgres
 [demo]: scripts/verify-demo.ps1
+
+[commit-14eb308]: https://github.com/cyson21/equipment-reservation/commit/14eb308871fb8da16cbe6e4dc82f8bc18920e217
+[commit-1ccb24f]: https://github.com/cyson21/equipment-reservation/commit/1ccb24fb68108b5b85aae7c42f2181ef22b69cca
+[commit-21cbad1]: https://github.com/cyson21/equipment-reservation/commit/21cbad16bea4c9d050ca0107a559844506f43a75
+[commit-2f3c7b2]: https://github.com/cyson21/equipment-reservation/commit/2f3c7b2dbb5fa32dace8e7ddf00938fe109b0af4
+[commit-33a8d8a]: https://github.com/cyson21/equipment-reservation/commit/33a8d8a5742b236343bac7465b846637c8439ac3
+[commit-84f15b6]: https://github.com/cyson21/equipment-reservation/commit/84f15b6e2bdc14b3011202c3d1b55051237e3fc1
+[commit-86171c3]: https://github.com/cyson21/equipment-reservation/commit/86171c30e5440f2a52e2c401552010bf60dc69bb
+[commit-9820e87]: https://github.com/cyson21/equipment-reservation/commit/9820e87dda4092987795616a40343d92d5de3c5a
+[commit-ac2c366]: https://github.com/cyson21/equipment-reservation/commit/ac2c366285c6c24197512667a93b2803405c73eb
+[commit-e4c0904]: https://github.com/cyson21/equipment-reservation/commit/e4c0904a68e7cc439a2a2f53f42e8176a7a42b5e
+[commit-f102a40]: https://github.com/cyson21/equipment-reservation/commit/f102a407c329fe051e755014e4aa296da0654f3e
