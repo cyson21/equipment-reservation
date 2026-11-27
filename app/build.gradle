@@ -31,6 +31,10 @@ springBoot {
     mainClass = 'io.github.cyson21.reservation.ReservationApplication'
 }
 
+tasks.named('bootJar') {
+    archiveFileName = 'equipment-reservation.jar'
+}
+
 tasks.named('test') {
     useJUnitPlatform {
         excludeTags('postgres')
