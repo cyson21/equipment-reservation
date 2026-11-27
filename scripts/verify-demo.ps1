@@ -35,19 +35,24 @@ function Get-LoopbackPort {
     try { $listener.LocalEndpoint.Port } finally { $listener.Stop() }
 }
 
-function Show-TestResults([string]$Path, [string]$Suite) {
+function Show-TestResults([string]$Path, [string]$Suite, [string]$RequiredCase) {
     $cases = $failed = $skipped = 0
     $seconds = 0.0
+    $requiredCaseSeen = !$RequiredCase
     foreach ($file in (Get-ChildItem -LiteralPath $Path -File -Filter 'TEST-*.xml')) {
         $report = ([xml](Get-Content -LiteralPath $file.FullName -Raw)).testsuite
         $cases += [int]$report.tests
         $failed += [int]$report.failures + [int]$report.errors
         $skipped += [int]$report.skipped
+        if ($RequiredCase -and $report.testcase.name -contains ($RequiredCase + '()')) {
+            $requiredCaseSeen = $true
+        }
         $seconds += [double]::Parse($report.time, [Globalization.CultureInfo]::InvariantCulture)
     }
     if ($cases -eq 0 -or $failed -ne 0 -or $skipped -ne 0) {
         throw "$Suite reported $cases tests, $failed failures and $skipped skips."
     }
+    if (!$requiredCaseSeen) { throw "$Suite did not run $RequiredCase." }
     "$Suite -> $cases passed, 0 failed, 0 skipped ($([Math]::Round($seconds, 3)) s in JUnit suites)"
 }
 
@@ -96,15 +101,23 @@ $pgData = Join-Path $work 'data'
 $pgLog = Join-Path $work 'postgres.log'
 $apiLog = Join-Path $work 'api.log'
 $apiErrors = Join-Path $work 'api.err'
+# Keep external Spring configuration out of the demo's disposable database.
+$inherited = Get-ChildItem Env: | Where-Object Name -Match '^(SPRING|SERVER)[_.-]'
+$demoKeys = @('SPRING_DATASOURCE_URL', 'SPRING_DATASOURCE_USERNAME', 'SPRING_DATASOURCE_PASSWORD', 'SPRING_CONFIG_LOCATION',
+    'TEST_POSTGRES_URL', 'TEST_POSTGRES_USER', 'TEST_POSTGRES_PASSWORD',
+    'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS')
 $savedEnvironment = @{}
-foreach ($key in @('SPRING_DATASOURCE_URL', 'SPRING_DATASOURCE_USERNAME', 'SPRING_DATASOURCE_PASSWORD',
-        'TEST_POSTGRES_URL', 'TEST_POSTGRES_USER', 'TEST_POSTGRES_PASSWORD')) {
+foreach ($key in ($demoKeys + $inherited.Name)) {
     $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
 }
 
 $api = $null
 Push-Location -LiteralPath $project
 try {
+    foreach ($key in $savedEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+    }
+    $env:SPRING_CONFIG_LOCATION = 'classpath:/application.properties'
     Invoke-Checked '.\gradlew.bat' @(':core:test', ':core:jar', '--rerun-tasks', '--console=plain')
     Show-TestResults 'core\build\test-results\test' 'Core'
     $modules = Invoke-Checked $jdeps @('--print-module-deps', 'core\build\libs\core.jar')
@@ -124,7 +137,7 @@ try {
 
     Invoke-Checked '.\gradlew.bat' @(':app:test', ':app:postgresTest', ':app:bootJar', '--rerun-tasks', '--console=plain')
     Show-TestResults 'app\build\test-results\test' 'REST and CLI'
-    Show-TestResults 'app\build\test-results\postgresTest' 'PostgreSQL'
+    Show-TestResults 'app\build\test-results\postgresTest' 'PostgreSQL' 'overlappingRequestsActuallyContendAndOnlyTheCommittedReservationSurvives'
 
     $apiPort = Get-LoopbackPort
     $server = @{
@@ -186,25 +199,29 @@ FROM reservation WHERE equipment_id = 1;
     }
     throw
 } finally {
-    Pop-Location
-    foreach ($key in $savedEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
-    }
-    if ($api) {
-        if (!$api.HasExited) {
-            Stop-Process -Id $api.Id
-            if (!$api.WaitForExit(10000)) { throw 'REST server cleanup timed out.' }
+    try {
+        Pop-Location
+        foreach ($key in $savedEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process')
         }
-        $api.Dispose()
+        if ($api) {
+            try {
+                if (!$api.HasExited) {
+                    Stop-Process -Id $api.Id
+                    if (!$api.WaitForExit(10000)) { throw 'REST server cleanup timed out.' }
+                }
+            } finally { $api.Dispose() }
+        }
+    } finally {
+        if (Test-Path -LiteralPath (Join-Path $pgData 'postmaster.pid')) {
+            Invoke-Checked $pgCtl @('stop', '-D', $pgData, '-m', 'fast', '-w', '-t', '20')
+        }
+        $resolved = (Resolve-Path -LiteralPath $work).Path
+        $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+        if ((Split-Path -Parent $resolved) -ne $temp -or (Split-Path -Leaf $resolved) -notlike 'equipment-reservation-demo-*') {
+            throw 'Unexpected temporary directory path.'
+        }
+        Remove-Item -LiteralPath $resolved -Recurse
     }
-    if (Test-Path -LiteralPath (Join-Path $pgData 'postmaster.pid')) {
-        Invoke-Checked $pgCtl @('stop', '-D', $pgData, '-m', 'fast', '-w', '-t', '20')
-    }
-    $resolved = (Resolve-Path -LiteralPath $work).Path
-    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
-    if ((Split-Path -Parent $resolved) -ne $temp -or (Split-Path -Leaf $resolved) -notlike 'equipment-reservation-demo-*') {
-        throw 'Unexpected temporary directory path.'
-    }
-    Remove-Item -LiteralPath $resolved -Recurse
 }
 'Demo verified. Temporary PostgreSQL and REST processes were stopped.'
