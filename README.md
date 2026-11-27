@@ -1,6 +1,6 @@
 # 공용 장비 예약
 
-예약 정책을 한 곳에 두면 새 진입점을 추가하거나 저장 구현을 바꿀 때 업무 코드까지 수정해야 할까? 공용 장비 예약을 예시로, 포트와 어댑터가 이 변경의 범위를 어디까지 줄이는지 검증한다. Java 21, Spring Boot, PostgreSQL 17을 사용한다.
+예약 정책을 한 곳에 두면 새 진입점을 추가하거나 저장 구현을 바꿀 때 업무 코드까지 수정해야 할까? 공용 장비 예약을 예시로, 포트와 어댑터가 이 변경의 범위를 어디까지 줄이는지 검증한다. Java 21, Spring Boot 4.2.0, PostgreSQL 17을 사용한다.
 
 ## 왜 헥사고날 아키텍처인가
 
@@ -28,7 +28,7 @@
 - `domain`은 예약 후보와 `TimeSlot`을 표현한다. `TimeSlot`은 시각 범위와 두 구간의 겹침을 정의한다. 저장 어댑터는 확정된 예약의 활성·취소 상태를 보관한다.
 - `application`은 입력 포트와 유스케이스, 출력 포트를 소유한다. `EquipmentCatalog`는 장비 목록과 존재 여부를 제공한다. `ReservationStore.tryReserve`는 확정 또는 시간 충돌을 원자적으로 반환하고, `cancel`은 기존 예약 취소 또는 미등록을 반환한다.
 - `adapter.in`의 REST와 CLI는 입력 형식과 결과 표현을 맡는다. `adapter.out`의 PostgreSQL 구현은 JDBC와 SQL을 담당한다. 인메모리 구현은 코어 유스케이스 테스트에서 같은 출력 포트를 사용한다.
-- `bootstrap`은 Spring 의존성 조립을 맡는다. REST 서버와 CLI는 각각 웹 모드와 비웹 모드로 실행하며 같은 PostgreSQL 데이터베이스를 사용한다.
+- `ReservationApplication`은 Spring 의존성 조립을 맡는다. REST 서버와 CLI는 각각 웹 모드와 비웹 모드로 실행하며 같은 PostgreSQL 데이터베이스를 사용한다.
 
 ## PostgreSQL의 동시 예약 처리
 
@@ -41,7 +41,7 @@ CONSTRAINT reservation_no_active_overlap EXCLUDE USING gist (
 ) WHERE (status = 'ACTIVE')
 ```
 
-장비 존재를 확인한 뒤 한 번의 `INSERT`로 예약한다. `ON CONFLICT ON CONSTRAINT reservation_no_active_overlap DO NOTHING RETURNING id`의 결과가 비어 있으면 시간 충돌로 처리한다. 기본 키나 외래 키 등 다른 DB 오류는 그대로 실패 처리한다. 예약 성공은 쓰기가 커밋된 뒤 반환한다.
+장비 존재를 확인한 뒤 한 번의 `INSERT`로 예약한다. `ON CONFLICT ON CONSTRAINT reservation_no_active_overlap DO NOTHING RETURNING id`의 결과가 비어 있으면 시간 충돌로 처리한다. 기본 키나 외래 키 등 다른 DB 오류는 그대로 실패 처리한다. 실행 앱에서는 외부 트랜잭션 없이 JDBC의 기본 자동 커밋으로 이 문장을 실행한다. 따라서 성공 응답은 해당 쓰기가 커밋된 뒤 반환된다.
 
 취소는 예약 ID로 `UPDATE … RETURNING id`를 한 번 실행한다. 갱신 대상은 취소 상태인 행도 포함한다. 취소와 예약이 동시에 들어오면 예약 시점에 활성 예약이 남아 있어 시간 충돌을 받을 수 있다. 취소가 완료된 뒤에는 같은 구간을 재예약할 수 있다.
 
@@ -72,10 +72,59 @@ CONSTRAINT reservation_no_active_overlap EXCLUDE USING gist (
 
 별도 체크아웃에서 의존성을 캐시에 받은 뒤 오프라인으로 재실행했다. Spring과 PostgreSQL 없이 JUnit 21건이 통과했고 실패·건너뜀은 0건이었다. 테스트 스위트 실행 시간 합계는 0.088초였고, Wrapper 호출부터 빌드·테스트 종료까지 약 2.6초가 걸렸다. 코어 JAR의 JDK 모듈 의존성은 `java.base`였고 Gradle `runtimeClasspath`에는 외부 라이브러리가 없었다.
 
-저장 계약 테스트 7건은 [공용 테스트 픽스처](core/src/testFixtures/java/io/github/cyson21/reservation/testing/ReservationStoreContract.java)에 있다. PostgreSQL 어댑터에도 같은 테스트를 연결한다. 어댑터 구현 후에는 `git diff ac2c366..HEAD -- core/src/main`으로 코어 변경 범위를 확인할 수 있다.
+저장 계약 테스트 7건은 [공용 테스트 픽스처](core/src/testFixtures/java/io/github/cyson21/reservation/testing/ReservationStoreContract.java)에 있다. 인메모리와 PostgreSQL 어댑터의 테스트가 이 계약을 공유한다.
+
+### REST·CLI·PostgreSQL 통합 검증
+
+입력 어댑터와 PostgreSQL 어댑터를 별도 브랜치에서 작업하고 `1ccb24f`, `21cbad1`로 각각 통합했다. `14eb308`이 한 Spring Boot 애플리케이션에서 세 입력 포트와 JDBC 저장 어댑터를 연결한다. 코어 기준 `ac2c366` 이후 `core/` 전체의 Git diff는 비어 있다.
+
+| 실행 | 확인 결과 |
+| --- | --- |
+| `:core:test` | 21건 통과. `jdeps` 결과는 `java.base`. |
+| `:app:test` | REST·CLI 테스트 7건 통과. |
+| `:app:postgresTest` | PostgreSQL 17.12에서 11건 통과. 인메모리에서 사용한 저장 계약 7건을 같은 테스트 코드로 재실행했다. 독립 JDBC 연결이 실제로 잠금을 기다리는 것을 관찰했고, 커밋 후 시간 충돌 1건과 활성 예약 1건을 확인했다. |
+| 실행 JAR | REST로 예약하면 `201`, 겹치는 CLI 예약은 종료 코드 `4`와 `TIME_CONFLICT`, REST 취소는 `204`였다. REST 서버 종료 이후 같은 CLI가 동일 구간을 다시 예약했고, PostgreSQL에서 활성 1건·취소 1건과 정확한 마이크로초를 확인했다. |
+
+실행한 테스트는 모두 실패·건너뜀 0건이었다.
 
 ### 설계 단계에서 확인한 동작
 
-Windows의 PostgreSQL 17.12 임시 클러스터에서 제약과 SQL을 실행했다. 인접 구간, 다른 장비의 겹치는 구간, 반복 취소, 미등록 ID 취소, 취소 후 재예약, 기본 키 오류 전파를 확인했다. 독립 `psql` 연결에서 첫 예약을 커밋하기 전 겹치는 두 번째 예약이 잠금을 기다리는 것을 `pg_stat_activity`로 확인했다. 커밋 후 두 번째 삽입은 빈 결과를 반환했고 대상 장비의 활성 예약은 1건이었다. 이 실험은 PostgreSQL 제약과 SQL 동작을 확인한 결과다. JDBC 변환과 REST·CLI 실행은 어댑터 단계에서 검증한다.
+Windows의 PostgreSQL 17.12 임시 클러스터에서 제약과 SQL을 실행했다. 인접 구간, 다른 장비의 겹치는 구간, 반복 취소, 미등록 ID 취소, 취소 후 재예약, 기본 키 오류 전파를 확인했다. 독립 `psql` 연결에서 첫 예약을 커밋하기 전 겹치는 두 번째 예약이 잠금을 기다리는 것을 `pg_stat_activity`로 확인했다. 커밋 후 두 번째 삽입은 빈 결과를 반환했고 대상 장비의 활성 예약은 1건이었다. 이 실험은 설계 단계에서 PostgreSQL 제약과 SQL 동작을 확인한 결과다.
 
-코어와 인메모리의 기준 커밋을 바탕으로 REST와 PostgreSQL을 연결하고 CLI를 추가한다. 각 단계의 변경 파일과 테스트 결과를 남겨 어댑터 추가가 코어에 어떤 영향을 줬는지 보여준다.
+## 실행 방법
+
+Java 21과 PostgreSQL 17을 사용한다. PostgreSQL에 빈 `equipment_reservation` 데이터베이스를 만들고 접속 계정을 준비한다. Flyway가 처음 실행될 때 테이블과 초기 장비를 만들며, 마이그레이션 계정에 `btree_gist`를 설치할 권한이 필요하다.
+
+```powershell
+$env:SPRING_DATASOURCE_URL = 'jdbc:postgresql://127.0.0.1:5432/equipment_reservation'
+$env:SPRING_DATASOURCE_USERNAME = 'reservation'
+.\gradlew.bat :app:bootJar
+$java = Join-Path $env:JAVA_HOME 'bin\java.exe'
+$jar = '.\app\build\libs\equipment-reservation.jar'
+& $java -jar $jar
+```
+
+접속에 암호가 필요하면 `SPRING_DATASOURCE_PASSWORD`를 환경 변수로 지정한다. REST 서버는 기본값으로 `127.0.0.1:8080`에 열린다. 아래 예제는 같은 데이터베이스 접속 설정과 `$java`, `$jar`를 지정한 별도 PowerShell에서 실행한다. CLI도 시작 시 DB 접속과 Flyway 검증을 수행한다.
+
+```powershell
+$body = @{
+    equipmentId = 1
+    startsAt = '2030-01-01T23:00:00.000001+09:00'
+    endsAt = '2030-01-02T00:00:00.000001+09:00'
+} | ConvertTo-Json
+$reservation = Invoke-RestMethod 'http://127.0.0.1:8080/reservations' -Method Post `
+    -ContentType 'application/json' -Body $body
+
+& $java -jar $jar cli reservation create 1 '2030-01-01T14:15:00Z' '2030-01-01T14:20:00Z'
+$LASTEXITCODE # 4. stderr에 TIME_CONFLICT
+
+Invoke-RestMethod "http://127.0.0.1:8080/reservations/$($reservation.reservationId)" -Method Delete
+& $java -jar $jar cli reservation create 1 '2030-01-01T14:00:00.000001Z' '2030-01-01T15:00:00.000001Z'
+$LASTEXITCODE # 0. stdout에 새 예약 UUID
+```
+
+전체 JDBC 검증은 폐기 가능한 별도 데이터베이스를 사용한다. `TEST_POSTGRES_URL`, `TEST_POSTGRES_USER`, 필요한 경우 `TEST_POSTGRES_PASSWORD`를 지정한 뒤 `.\gradlew.bat :app:postgresTest`를 실행한다. 테스트가 임시 스키마를 만들고 삭제하며 `btree_gist`를 설치할 수 있다.
+
+## 아키텍처 변경 범위 비교
+
+어댑터 변경과 비교할 때는 `git diff ac2c366..HEAD -- core`를 실행한다. 코어 기준과 동일한 저장 계약으로 어댑터의 동작을 검증한 결과는 위 표에서 확인할 수 있다.
